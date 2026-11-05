@@ -4,14 +4,48 @@
 
 打开 http://127.0.0.1:8901 → 首次进来填 token → 自动拉数 → 看到自己的工作台
 """
-import http.server, json, os, pathlib, socketserver, subprocess, sys, threading, urllib.parse
+import http.server, json, os, pathlib, socketserver, subprocess, sys, threading, time, urllib.parse
 
 HERE = pathlib.Path(__file__).resolve().parent
 TOKEN_FILE = pathlib.Path.home() / ".workbuddy_token"
 OUT = HERE / "用户整理工作台.html"
 PORT = int(os.environ.get("WB_PORT", "8901"))
 
-STATE = {"running": False, "log": [], "ok": False}
+STATE = {"running": False, "log": [], "ok": False, "why": ""}
+STAMP = HERE / "上次更新.txt"
+STALE_HOURS = 12
+
+INJECT = """
+<div id="wbBar" style="position:fixed;right:16px;bottom:16px;z-index:99999;
+ font:13px/1.5 -apple-system,'PingFang SC',sans-serif">
+  <div id="wbCard" style="background:#1f4a3d;color:#fff;border-radius:8px;padding:10px 14px;
+   box-shadow:0 4px 16px rgba(0,0,0,.18);display:flex;gap:10px;align-items:center">
+    <span id="wbTxt">数据截至 {STAMP}</span>
+    <button id="wbBtn" style="background:#fff;color:#1f4a3d;border:0;border-radius:5px;
+     padding:5px 10px;font-size:12px;cursor:pointer;font-weight:600">更新数据</button>
+  </div>
+</div>
+<script>
+(function(){
+  const btn = document.getElementById('wbBtn'), txt = document.getElementById('wbTxt');
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = '更新中…';
+    txt.textContent = '正在拉最新数据，约 3-8 分钟';
+    const r = await fetch('/api/rebuild', {method:'POST'});
+    if(!r.ok){ txt.textContent = '启动失败'; btn.disabled=false; return; }
+    const poll = async () => {
+      const d = await (await fetch('/api/status')).json();
+      const last = (d.log||[]).slice(-1)[0] || '';
+      txt.textContent = last ? last.slice(0, 40) : '拉取中…';
+      if(d.running){ setTimeout(poll, 2000); return; }
+      if(d.ok){ txt.textContent = '更新完成，正在刷新…'; setTimeout(()=>location.reload(), 800); }
+      else { txt.textContent = '更新失败，看服务窗口'; btn.disabled = false; btn.textContent = '重试'; }
+    };
+    poll();
+  };
+})();
+</script>
+"""
 
 
 def token():
@@ -39,6 +73,33 @@ def check_token(t):
         return False, str(e)[:120]
 
 
+def stamp():
+    if STAMP.exists():
+        return STAMP.read_text(encoding="utf-8").strip()
+    return "未生成"
+
+
+def is_stale():
+    if not OUT.exists():
+        return True
+    try:
+        age = time.time() - OUT.stat().st_mtime
+        return age > STALE_HOURS * 3600
+    except OSError:
+        return True
+
+
+def serve_html():
+    """给页面注入「更新数据」浮条"""
+    html = OUT.read_bytes().decode("utf-8", "replace")
+    bar = INJECT.replace("{STAMP}", stamp())
+    if "</body>" in html:
+        html = html.replace("</body>", bar + "</body>", 1)
+    else:
+        html += bar
+    return html.encode()
+
+
 def run_build():
     """后台跑 build_workbench.py"""
     STATE.update(running=True, ok=False, log=[])
@@ -54,6 +115,8 @@ def run_build():
                 STATE["log"] = STATE["log"][-40:]
             p.wait()
             STATE["ok"] = p.returncode == 0 and OUT.exists()
+            if STATE["ok"]:
+                STAMP.write_text(time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
         except Exception as e:  # noqa: BLE001
             STATE["log"].append("出错：" + str(e)[:200])
         finally:
@@ -129,7 +192,9 @@ class H(http.server.SimpleHTTPRequestHandler):
             return self._send(json.dumps(STATE, ensure_ascii=False), "application/json")
         if p in ("/", "/index.html"):
             if OUT.exists() and token():
-                return self._send(OUT.read_bytes())
+                if is_stale() and not STATE["running"]:
+                    run_build()          # 超过 12 小时自动后台更新
+                return self._send(serve_html())
             return self._send(SETUP)
         f = HERE / p.lstrip("/")
         if f.exists() and f.is_file() and f.resolve().parent == HERE.resolve():
