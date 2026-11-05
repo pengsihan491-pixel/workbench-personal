@@ -20,7 +20,7 @@ INJECT = """
  font:13px/1.5 -apple-system,'PingFang SC',sans-serif">
   <div id="wbCard" style="background:#1f4a3d;color:#fff;border-radius:8px;padding:10px 14px;
    box-shadow:0 4px 16px rgba(0,0,0,.18);display:flex;gap:10px;align-items:center">
-    <span id="wbTxt">数据截至 {STAMP}</span>
+    <span id="wbTxt">数据截至 {STAMP}{BUSY}</span>
     <button id="wbBtn" style="background:#fff;color:#1f4a3d;border:0;border-radius:5px;
      padding:5px 10px;font-size:12px;cursor:pointer;font-weight:600">更新数据</button>
   </div>
@@ -92,7 +92,8 @@ def is_stale():
 def serve_html():
     """给页面注入「更新数据」浮条"""
     html = OUT.read_bytes().decode("utf-8", "replace")
-    bar = INJECT.replace("{STAMP}", stamp())
+    busy = "（后台补数据中）" if STATE["running"] else ""
+    bar = INJECT.replace("{STAMP}", stamp()).replace("{BUSY}", busy)
     if "</body>" in html:
         html = html.replace("</body>", bar + "</body>", 1)
     else:
@@ -219,10 +220,10 @@ pre{background:#faf9f6;border:1px solid #eee9e1;padding:12px;font-size:11.5px;ma
 overflow:auto;margin-top:14px;white-space:pre-wrap}
 </style></head><body><div class="box">
 <h1>用户整理工作台</h1>
-<p>第一次使用，把你在 CRM 里的个人凭证贴进来。凭证只保存在这台电脑上
-（<code>~/.workbuddy_token</code>），不会上传到任何地方。</p>
+<p>贴一次凭证，之后就再也不用管了。<br>
+<span style="font-size:12.5px;color:#9aa39e">凭证只存在这台电脑上，不会上传。</span></p>
 <input id="t" placeholder="jsu_xxxxxxxxxxxxxxxx" autocomplete="off">
-<button id="go">开始生成我的工作台</button>
+<button id="go">开始使用</button>
 <a id="enter" href="/" style="display:none;margin-top:14px;padding:10px 20px;background:#2f6f4b;
  color:#fff;border-radius:4px;font-size:13.5px;text-decoration:none">进入工作台 →</a>
 <div class="msg" id="m"></div>
@@ -237,24 +238,26 @@ btn.onclick = async () => {
   const r = await fetch('/api/setup', {method:'POST', body: JSON.stringify({token:t})});
   const d = await r.json();
   if(!d.ok){ btn.disabled=false; m.className='msg err'; m.textContent = '凭证无效：' + (d.error||''); return; }
-  m.className='msg ok'; m.textContent = '凭证有效（' + (d.档||'') + '），正在拉数据，第一次大约 3–8 分钟…';
+  m.className='msg ok'; m.textContent = '凭证有效，正在生成你的工作台（约 2 分钟，这个窗口不要关）…';
   document.getElementById('log').style.display='block';
   poll();
 };
+let left = 120;
 async function poll(){
   const d = await (await fetch('/api/status')).json();
-  const log = document.getElementById('log');
-  log.textContent = (d.log||[]).join('\\n');
-  log.scrollTop = log.scrollHeight;
-  if(d.step) m.textContent = d.step + (d.running ? '（进行中…）' : '');
-  if(d.ready){
-    document.getElementById('enter').style.display = 'inline-block';
-    if(!window.__entered){ /* 等用户点，或自动进 */ }
+  if(d.ready){ m.textContent = '好了，正在进入…'; location.href = '/'; return; }
+  if(d.running){
+    left = Math.max(10, left - 2);
+    m.textContent = '正在生成你的工作台，约还要 ' + left + ' 秒（不要关窗口）';
+    setTimeout(poll, 2000);
+    return;
   }
-  if(d.running){ setTimeout(poll, 2000); return; }
-  if(d.ok){ m.className='msg ok'; m.textContent='全部完成'; setTimeout(()=>location.href='/', 600); return; }
-  if(d.ready){ m.className='msg ok'; m.textContent='基础数据已好，可以先点上面进入（剩下的会自动补）'; return; }
-  m.className='msg err'; m.textContent='生成失败，把下面的日志发给管理员'; btn.disabled=false;
+  if(d.ok){ location.href = '/'; return; }
+  m.className = 'msg err';
+  m.textContent = '生成失败。把浏览器里这段文字截图发给管理员：';
+  document.getElementById('log').style.display = 'block';
+  document.getElementById('log').textContent = (d.log||[]).slice(-12).join('\\n');
+  btn.disabled = false;
 }
 </script></body></html>"""
 
