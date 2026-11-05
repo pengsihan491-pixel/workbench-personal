@@ -11,7 +11,7 @@
 
 口径: 私域范围（跟进人=本人）含「当下好友」与「已被删除」。不取客户手机号。
 """
-import json, os, re, subprocess, sys, pathlib, datetime, statistics
+import json, os, re, subprocess, sys, pathlib, datetime, statistics, time
 from collections import Counter, defaultdict
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -24,20 +24,29 @@ REFRESH = "--refresh" in sys.argv
 
 
 def _ensure_task_state():
-    """每次构建前重建任务状态（凭证换了也不会卡住）"""
+    """每次构建前重建任务状态（清掉残留状态与锁，凭证换了也不卡）"""
     env = dict(os.environ)
     if not env.get("WORKBUDDY_TOKEN"):
+        print("缺少凭证：WORKBUDDY_TOKEN 为空")
         return
+    for f in (STATE, STATE.with_name(STATE.name + ".lock")):
+        try:
+            if f.exists():
+                f.unlink()
+        except OSError as e:
+            print("清不掉 %s：%s" % (f.name, e))
     try:
-        if STATE.exists():
-            STATE.unlink()
-        subprocess.run([sys.executable, str(HELPER), "--state", str(STATE), "begin",
-                        "private_customer_review"], capture_output=True, text=True, env=env, timeout=90)
-    except Exception:
-        pass
+        p = subprocess.run([sys.executable, str(HELPER), "--state", str(STATE), "begin",
+                            "private_customer_review"], capture_output=True, text=True,
+                           env=env, timeout=120)
+        out = (p.stdout or "").strip()
+        if "task_context" not in out:
+            print("任务初始化失败（begin）：", (out or p.stderr or "无输出")[:300])
+        elif not STATE.exists():
+            print("任务状态没落盘：", str(STATE))
+    except Exception as e:  # noqa: BLE001
+        print("任务初始化异常：", str(e)[:200])
 
-
-_ensure_task_state()
 
 sys.path.insert(0, str(HERE))
 try:
@@ -49,19 +58,54 @@ except Exception:
     pass
 
 
+def _token():
+    t = os.environ.get("WORKBUDDY_TOKEN")
+    if t:
+        return t.strip()
+    f = pathlib.Path.home() / ".workbuddy_token"
+    if f.exists():
+        return f.read_text(encoding="utf-8").strip()
+    raise SystemExit("缺少凭证：WORKBUDDY_TOKEN 为空")
+
+
 def _call(path):
-    env = dict(os.environ)
-    if not env.get("WORKBUDDY_TOKEN"):
-        sys.exit("缺少凭证：设置 WORKBUDDY_TOKEN，或运行 python3 wb_token.py 保存一次")
-    p = subprocess.run([sys.executable, str(HELPER), "--state", str(STATE), "get", path],
-                       capture_output=True, text=True, env=env)
-    raw = p.stdout.strip()
-    if not raw:
-        sys.exit("接口无输出: %s / %s" % (path, p.stderr[:200]))
-    d = json.loads(raw)
-    if d.get("ok") is False:
-        sys.exit("接口报错 %s: %s" % (path, json.dumps(d, ensure_ascii=False)[:300]))
-    return d
+    """直接调 CRM 接口（不依赖中间层，避免状态文件问题）"""
+    import urllib.error
+    import urllib.request
+    url = "https://jiasujiaoyu.cn/api/workbuddy" + path
+    tok = _token()
+    for attempt in range(4):
+        req = urllib.request.Request(url, headers={
+            "Authorization": "Bearer " + tok,
+            "Accept": "application/json",
+            "User-Agent": "workbench/1.0",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                d = json.loads(r.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:200]
+            if e.code == 429:
+                try:
+                    wait = int(json.loads(body).get("retry_after_seconds") or 20)
+                except Exception:
+                    wait = 20
+                time.sleep(min(wait, 90))
+                continue
+            if e.code in (500, 502, 503, 504):
+                time.sleep(4 * (attempt + 1))
+                continue
+            if e.code == 401:
+                raise SystemExit("凭证无效或已过期（401）：请找管理员换一份")
+            raise SystemExit("接口报错 %s %s：%s" % (e.code, path, body))
+        except Exception as e:  # noqa: BLE001
+            time.sleep(3 * (attempt + 1))
+            last = e
+            continue
+        if d.get("ok") is False:
+            raise SystemExit("接口报错 %s：%s" % (path, json.dumps(d, ensure_ascii=False)[:300]))
+        return d
+    raise SystemExit("接口多次失败：%s" % path)
 
 
 def fetch(path, key, max_pages=80):
