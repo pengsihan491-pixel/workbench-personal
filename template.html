@@ -2565,7 +2565,37 @@ function showList(cfg){
 /* ---------- 聊天分析 ---------- */
 (function(){
   const C = D.chat; const box = $('#chatBox'); if(!box) return;
-  if(!C){ box.innerHTML = '<div class="panel pad">还没拉聊天数据：跑 python3 抓会话存档.py --days 30 再 python3 分析会话.py</div>'; return; }
+  if(!C){
+    const online = location.protocol.indexOf('http') === 0;
+    box.innerHTML = `<div class="sec"><div class="panel pad" style="max-width:620px">
+      <div style="font-size:15px;font-weight:600;margin-bottom:8px">这一页还没数据</div>
+      <div style="font-size:13px;line-height:1.9;color:var(--ink2)">
+        聊天分析读的是<b>企业微信会话存档</b>，需要单独拉一次。
+        ${online ? '点下面按钮，会拉<b>你自己名下</b>最近 30 天的对话（约 5–10 分钟）。' : '当前是离线快照，这一页看不到；用启动脚本打开才有按钮。'}
+      </div>
+      ${online ? `<div style="margin-top:14px">
+        <button class="mini" id="chatPull" style="padding:8px 18px;border-color:var(--brand2);color:var(--brand);font-weight:600">拉取我的聊天记录 →</button>
+        <div id="chatMsg" style="margin-top:10px;font-size:12px;color:var(--muted)"></div>
+      </div>` : ''}
+    </div></div>`;
+    const b2 = document.getElementById('chatPull');
+    if(b2) b2.onclick = async () => {
+      b2.disabled = true; b2.textContent = '拉取中…';
+      const m = document.getElementById('chatMsg');
+      await fetch('/api/chat', {method:'POST'});
+      const poll = async () => {
+        const d = await (await fetch('/api/status')).json();
+        const last = (d.log || []).slice(-1)[0] || '准备中…';
+        m.textContent = last.slice(0, 60);
+        if(d.running){ setTimeout(poll, 2500); return; }
+        if(d.ok){ m.textContent = '完成，正在刷新…'; setTimeout(()=>location.reload(), 900); }
+        else { m.textContent = '失败了，看服务窗口的日志'; b2.disabled = false; b2.textContent = '重试'; }
+      };
+      poll();
+    };
+    if($('#cntChat')) $('#cntChat').textContent = '';
+    return;
+  }
   if($('#cntChat')) $('#cntChat').textContent = C['对象数'];
   const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
   const minePct = pct(C['我方'], C['总消息']);

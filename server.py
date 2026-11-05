@@ -11,7 +11,7 @@ TOKEN_FILE = pathlib.Path.home() / ".workbuddy_token"
 OUT = HERE / "用户整理工作台.html"
 PORT = int(os.environ.get("WB_PORT", "8901"))
 
-STATE = {"running": False, "log": [], "ok": False, "why": ""}
+STATE = {"running": False, "log": [], "ok": False, "why": "", "step": "", "ready": False}
 STAMP = HERE / "上次更新.txt"
 STALE_HOURS = 12
 
@@ -100,6 +100,83 @@ def serve_html():
     return html.encode()
 
 
+STEPS = [
+    ("基础数据", ["build_workbench.py"]),
+    ("聊天记录", ["抓会话存档.py", "--days", "30", "--max-pages", "160"]),
+    ("聊天分析", ["分析会话.py"]),
+    ("已购课程", ["抓已购课程.py", "--workers", "6"]),
+    ("重算总表", ["build_workbench.py"]),
+]
+
+
+def run_pipeline():
+    """贴完凭证后一条龙：逐步补数据，每步完成都重算，用户随时能进"""
+    if STATE["running"]:
+        return
+    STATE.update(running=True, ok=False, log=[], step="", ready=False)
+    env = dict(os.environ, WORKBUDDY_TOKEN=token())
+
+    def _go():
+        okall = True
+        for i, (name, cmd) in enumerate(STEPS, 1):
+            STATE["step"] = "第 %d/%d 步 · %s" % (i, len(STEPS), name)
+            STATE["log"].append("—— " + STATE["step"] + " ——")
+            try:
+                p = subprocess.Popen([sys.executable, "-u", str(HERE / cmd[0])] + cmd[1:],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, env=env, cwd=str(HERE))
+                for line in p.stdout:
+                    STATE["log"].append(line.rstrip()[:200])
+                    STATE["log"] = STATE["log"][-80:]
+                p.wait()
+                if p.returncode != 0:
+                    STATE["log"].append("这一步失败了，跳过继续")
+                    okall = False
+            except Exception as e:  # noqa: BLE001
+                STATE["log"].append("出错：" + str(e)[:160])
+                okall = False
+            if i == 1 and OUT.exists():
+                STATE["ready"] = True          # 第一步完成就能进去看
+        STATE["ok"] = OUT.exists()
+        STATE["step"] = "全部完成" if okall else "部分完成（看日志）"
+        if OUT.exists():
+            STAMP.write_text(time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
+        STATE["running"] = False
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
+def run_job(cmds, why=""):
+    """顺序跑几个脚本，日志进 STATE"""
+    STATE.update(running=True, ok=False, log=[], why=why)
+    env = dict(os.environ, WORKBUDDY_TOKEN=token())
+
+    def _go():
+        ok = True
+        for cmd in cmds:
+            STATE["log"].append("→ " + " ".join(pathlib.Path(c).name for c in cmd))
+            try:
+                p = subprocess.Popen([sys.executable, "-u"] + cmd, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True, env=env, cwd=str(HERE))
+                for line in p.stdout:
+                    STATE["log"].append(line.rstrip()[:200])
+                    STATE["log"] = STATE["log"][-60:]
+                p.wait()
+                if p.returncode != 0:
+                    ok = False
+                    break
+            except Exception as e:  # noqa: BLE001
+                STATE["log"].append("出错：" + str(e)[:200])
+                ok = False
+                break
+        STATE["ok"] = ok and OUT.exists()
+        if STATE["ok"]:
+            STAMP.write_text(time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
+        STATE["running"] = False
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
 def run_build():
     """后台跑 build_workbench.py"""
     STATE.update(running=True, ok=False, log=[])
@@ -146,6 +223,8 @@ overflow:auto;margin-top:14px;white-space:pre-wrap}
 （<code>~/.workbuddy_token</code>），不会上传到任何地方。</p>
 <input id="t" placeholder="jsu_xxxxxxxxxxxxxxxx" autocomplete="off">
 <button id="go">开始生成我的工作台</button>
+<a id="enter" href="/" style="display:none;margin-top:14px;padding:10px 20px;background:#2f6f4b;
+ color:#fff;border-radius:4px;font-size:13.5px;text-decoration:none">进入工作台 →</a>
 <div class="msg" id="m"></div>
 <pre id="log" style="display:none"></pre>
 </div>
@@ -167,9 +246,15 @@ async function poll(){
   const log = document.getElementById('log');
   log.textContent = (d.log||[]).join('\\n');
   log.scrollTop = log.scrollHeight;
-  if(d.running){ setTimeout(poll, 1500); return; }
-  if(d.ok){ m.textContent='完成了，正在打开…'; setTimeout(()=>location.href='/', 800); }
-  else { m.className='msg err'; m.textContent='生成失败，把下面的日志发给管理员'; btn.disabled=false; }
+  if(d.step) m.textContent = d.step + (d.running ? '（进行中…）' : '');
+  if(d.ready){
+    document.getElementById('enter').style.display = 'inline-block';
+    if(!window.__entered){ /* 等用户点，或自动进 */ }
+  }
+  if(d.running){ setTimeout(poll, 2000); return; }
+  if(d.ok){ m.className='msg ok'; m.textContent='全部完成'; setTimeout(()=>location.href='/', 600); return; }
+  if(d.ready){ m.className='msg ok'; m.textContent='基础数据已好，可以先点上面进入（剩下的会自动补）'; return; }
+  m.className='msg err'; m.textContent='生成失败，把下面的日志发给管理员'; btn.disabled=false;
 }
 </script></body></html>"""
 
@@ -195,6 +280,8 @@ class H(http.server.SimpleHTTPRequestHandler):
                 if is_stale() and not STATE["running"]:
                     run_build()          # 超过 12 小时自动后台更新
                 return self._send(serve_html())
+            if token() and STATE["running"]:
+                return self._send(SETUP)  # 首次生成中，显示进度
             return self._send(SETUP)
         f = HERE / p.lstrip("/")
         if f.exists() and f.is_file() and f.resolve().parent == HERE.resolve():
@@ -214,8 +301,16 @@ class H(http.server.SimpleHTTPRequestHandler):
             if not ok:
                 return self._send(json.dumps({"ok": False, "error": info}, ensure_ascii=False), "application/json")
             save_token(t)
-            run_build()
+            run_pipeline()
             return self._send(json.dumps({"ok": True, "档": info}, ensure_ascii=False), "application/json")
+        if p == "/api/chat":
+            if STATE["running"]:
+                return self._send(json.dumps({"ok": False, "error": "正在跑别的任务"}, ensure_ascii=False),
+                                  "application/json")
+            run_job([["抓会话存档.py", "--days", "30"],
+                     ["分析会话.py"],
+                     ["build_workbench.py"]], why="chat")
+            return self._send(json.dumps({"ok": True}), "application/json")
         if p == "/api/rebuild":
             run_build()
             return self._send(json.dumps({"ok": True}), "application/json")
