@@ -203,6 +203,45 @@ def run_build():
     threading.Thread(target=_go, daemon=True).start()
 
 
+
+# ---------------- 本地可写数据：排课 / 课程表 / 锁定名单 / 打标签 ----------------
+SESS = HERE / "开课节点.csv"
+SESS_HDR = ["期次", "匹配关键词", "开课日期", "结课日期", "续费窗口天数", "续费产品关键词"]
+PRODF = HERE / "高客单课程.csv"
+PROD_HDR = ["名称", "价格", "档位", "匹配关键词", "说明", "排除参加过面对面"]
+LOCKS = HERE / "锁定名单.json"
+IDX = HERE / "客户索引.json"
+CHATIDX = HERE / "聊天索引.json"
+
+
+def read_csv(path, hdr):
+    import csv as _csv
+    if not path.exists():
+        return [hdr], []
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(_csv.reader(f))
+    return (rows[0] if rows else hdr), (rows[1:] if rows else [])
+
+
+def write_csv(path, hdr, rows):
+    import csv as _csv
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(hdr)
+        w.writerows(rows)
+
+
+def load_json(path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+    except ValueError:
+        return default
+
+
+def save_json(path, obj):
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
 SETUP = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>用户整理工作台 · 初始化</title><style>
 body{margin:0;background:#f4f2ee;color:#1d2321;font-family:-apple-system,'PingFang SC',sans-serif}
@@ -276,6 +315,44 @@ class H(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         p = urllib.parse.urlsplit(self.path).path
+        if p == "/api/products":
+            hdr, rows = read_csv(PRODF, PROD_HDR)
+            return self._send(json.dumps({"ok": True, "header": hdr, "rows": rows}, ensure_ascii=False), "application/json")
+        if p == "/api/locks":
+            return self._send(json.dumps({"ok": True, "locks": load_json(LOCKS, {})}, ensure_ascii=False), "application/json")
+        if p == "/api/sessions":
+            hdr, rows = read_csv(SESS, SESS_HDR)
+            return self._send(json.dumps({"ok": True, "header": hdr, "rows": rows}, ensure_ascii=False), "application/json")
+        if p == "/api/taglist":
+            import csv as _csv, io as _io
+            qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            tag = (qs.get("tag") or ["标签"])[0]
+            ids = [int(x) for x in (qs.get("ids") or [""])[0].split(",") if x.strip().isdigit()]
+            by = load_json(IDX, {})
+            chat = load_json(CHATIDX, {})
+            out = []
+            for cid in ids:
+                r = by.get(str(cid)) or {}
+                nm = r.get("name") or ""
+                c = chat.get(nm) or {}
+                out.append({"客户编号": cid, "称呼": nm, "企微昵称": nm,
+                            "累计消费": round(r.get("spend") or 0),
+                            "最近跟进(天)": r.get("fuDays") if r.get("fuDays") is not None else "从无",
+                            "最近一句话": (c.get("最后一句") or "")[:50],
+                            "聊天条数": c.get("对方") or 0, "建议标签": tag})
+            out.sort(key=lambda x: x["企微昵称"])
+            buf = _io.StringIO()
+            w = _csv.DictWriter(buf, fieldnames=list(out[0].keys()) if out else ["客户编号"])
+            w.writeheader(); w.writerows(out)
+            body = ("\ufeff" + buf.getvalue()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="taglist.csv"; filename*=UTF-8\'\'%s'
+                             % urllib.parse.quote("打标签清单_%s.csv" % tag))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if p == "/api/status":
             return self._send(json.dumps(STATE, ensure_ascii=False), "application/json")
         if p in ("/", "/index.html"):
@@ -306,6 +383,86 @@ class H(http.server.SimpleHTTPRequestHandler):
             save_token(t)
             run_pipeline()
             return self._send(json.dumps({"ok": True, "档": info}, ensure_ascii=False), "application/json")
+        if p in ("/api/products", "/api/locks", "/api/sessions"):
+            try:
+                req = json.loads(raw or "{}")
+            except ValueError:
+                return self._send(json.dumps({"ok": False, "error": "bad json"}), "application/json", 400)
+            act = req.get("action") or "save"
+
+            if p == "/api/locks":
+                locks = load_json(LOCKS, {})
+                name = (req.get("课程") or "").strip()
+                if act == "save":
+                    if not name:
+                        return self._send(json.dumps({"ok": False, "error": "缺课程名"}, ensure_ascii=False), "application/json", 400)
+                    locks[name] = {"课程": name, "开课日": (req.get("开课日") or "").strip(),
+                                   "锁定时间": time.strftime("%Y-%m-%d %H:%M"),
+                                   "ids": [int(x) for x in (req.get("ids") or [])][:400],
+                                   "已聊": (locks.get(name) or {}).get("已聊", {})}
+                    save_json(LOCKS, locks)
+                    return self._send(json.dumps({"ok": True, "名单": len(locks[name]["ids"])}, ensure_ascii=False), "application/json")
+                if act == "mark":
+                    if name not in locks:
+                        return self._send(json.dumps({"ok": False, "error": "没有这场课"}, ensure_ascii=False), "application/json", 400)
+                    m = locks[name].setdefault("已聊", {})
+                    cid = str(req.get("id"))
+                    if req.get("done"):
+                        m[cid] = time.strftime("%Y-%m-%d %H:%M")
+                    else:
+                        m.pop(cid, None)
+                    save_json(LOCKS, locks)
+                    return self._send(json.dumps({"ok": True, "已聊": len(m)}), "application/json")
+                if act == "delete":
+                    locks.pop(name, None)
+                    save_json(LOCKS, locks)
+                    return self._send(json.dumps({"ok": True}), "application/json")
+
+            if p == "/api/products":
+                hdr, rows = read_csv(PRODF, PROD_HDR)
+                name = (req.get("名称") or "").strip()
+                if act == "delete":
+                    rows = [r for r in rows if not (r and r[0].strip() == name)]
+                    write_csv(PRODF, hdr, rows)
+                    run_build()
+                    return self._send(json.dumps({"ok": True}), "application/json")
+                if not name:
+                    return self._send(json.dumps({"ok": False, "error": "缺名称"}, ensure_ascii=False), "application/json", 400)
+                row = [name, str(req.get("价格") or ""), str(req.get("档位") or "高客单"),
+                       str(req.get("匹配关键词") or name), str(req.get("说明") or ""),
+                       "是" if req.get("排除参加过面对面") else "否"]
+                for i, r in enumerate(rows):
+                    if r and r[0].strip() == name:
+                        rows[i] = row; break
+                else:
+                    rows.append(row)
+                write_csv(PRODF, hdr, rows)
+                run_build()
+                return self._send(json.dumps({"ok": True, "总数": len(rows)}, ensure_ascii=False), "application/json")
+
+            if p == "/api/sessions":
+                hdr, rows = read_csv(SESS, SESS_HDR)
+                if act == "delete":
+                    key = (req.get("期次") or "").strip()
+                    rows = [r for r in rows if not (r and r[0].strip() == key)]
+                    write_csv(SESS, hdr, rows)
+                    run_build()
+                    return self._send(json.dumps({"ok": True}), "application/json")
+                key = (req.get("期次") or "").strip()
+                if not key:
+                    return self._send(json.dumps({"ok": False, "error": "缺期次"}, ensure_ascii=False), "application/json", 400)
+                row = [key, str(req.get("匹配关键词") or ""), str(req.get("开课日期") or ""),
+                       str(req.get("结课日期") or ""), str(req.get("续费窗口天数") or ""),
+                       str(req.get("续费产品关键词") or "")]
+                for i, r in enumerate(rows):
+                    if r and r[0].strip() == key:
+                        rows[i] = row; break
+                else:
+                    rows.append(row)
+                write_csv(SESS, hdr, rows)
+                run_build()
+                return self._send(json.dumps({"ok": True, "总数": len(rows)}, ensure_ascii=False), "application/json")
+
         if p == "/api/chat":
             if STATE["running"]:
                 return self._send(json.dumps({"ok": False, "error": "正在跑别的任务"}, ensure_ascii=False),
