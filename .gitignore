@@ -1,0 +1,19 @@
+# 个人数据，绝不入库
+*.json
+!package.json
+用户整理工作台.html
+工作台快照_*.html
+*_明细.csv
+*_汇总.json
+课程权限_已购.csv
+课程权限.csv
+课程直播日期.csv
+企微*.csv
+对公转账*
+cache/
+__pycache__/
+.DS_Store
+# 凭证
+.workbuddy_token
+.task_*.json
+task_wb_v1.json

@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""工作台壳服务：每个同事填自己的凭证，本地生成自己的工作台
+
+打开 http://127.0.0.1:8901 → 首次进来填 token → 自动拉数 → 看到自己的工作台
+"""
+import http.server, json, os, pathlib, socketserver, subprocess, sys, threading, urllib.parse
+
+HERE = pathlib.Path(__file__).resolve().parent
+TOKEN_FILE = pathlib.Path.home() / ".workbuddy_token"
+OUT = HERE / "用户整理工作台.html"
+PORT = int(os.environ.get("WB_PORT", "8901"))
+
+STATE = {"running": False, "log": [], "ok": False}
+
+
+def token():
+    return os.environ.get("WORKBUDDY_TOKEN") or (TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else "")
+
+
+def save_token(t):
+    TOKEN_FILE.write_text(t.strip(), encoding="utf-8")
+    try:
+        os.chmod(TOKEN_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def check_token(t):
+    """用 guide 接口验一下凭证是否有效"""
+    import urllib.request
+    req = urllib.request.Request("https://jiasujiaoyu.cn/api/workbuddy/guide",
+                                 headers={"Authorization": "Bearer " + t, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            d = json.loads(r.read().decode())
+        return bool(d.get("ok")), d.get("档") or ""
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:120]
+
+
+def run_build():
+    """后台跑 build_workbench.py"""
+    STATE.update(running=True, ok=False, log=[])
+    env = dict(os.environ, WORKBUDDY_TOKEN=token())
+
+    def _go():
+        try:
+            p = subprocess.Popen([sys.executable, str(HERE / "build_workbench.py")],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, env=env, cwd=str(HERE))
+            for line in p.stdout:
+                STATE["log"].append(line.rstrip()[:200])
+                STATE["log"] = STATE["log"][-40:]
+            p.wait()
+            STATE["ok"] = p.returncode == 0 and OUT.exists()
+        except Exception as e:  # noqa: BLE001
+            STATE["log"].append("出错：" + str(e)[:200])
+        finally:
+            STATE["running"] = False
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
+SETUP = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>用户整理工作台 · 初始化</title><style>
+body{margin:0;background:#f4f2ee;color:#1d2321;font-family:-apple-system,'PingFang SC',sans-serif}
+.box{max-width:560px;margin:12vh auto;background:#fff;padding:36px 34px;border:1px solid #e7e4de}
+h1{font-size:20px;margin:0 0 6px;font-weight:650}
+p{font-size:13px;color:#6b7570;line-height:1.8;margin:0 0 18px}
+input{width:100%;padding:11px 12px;border:1px solid #d9d5cd;font-size:13px;border-radius:4px;
+font-family:ui-monospace,Menlo,monospace}
+button{margin-top:14px;padding:10px 22px;background:#1f4a3d;color:#fff;border:0;border-radius:4px;
+font-size:13.5px;cursor:pointer}
+button:disabled{background:#9aa39e}
+.msg{font-size:12.5px;margin-top:14px;line-height:1.7}
+.err{color:#a63a2b}.ok{color:#2f6f4b}
+pre{background:#faf9f6;border:1px solid #eee9e1;padding:12px;font-size:11.5px;max-height:260px;
+overflow:auto;margin-top:14px;white-space:pre-wrap}
+</style></head><body><div class="box">
+<h1>用户整理工作台</h1>
+<p>第一次使用，把你在 CRM 里的个人凭证贴进来。凭证只保存在这台电脑上
+（<code>~/.workbuddy_token</code>），不会上传到任何地方。</p>
+<input id="t" placeholder="jsu_xxxxxxxxxxxxxxxx" autocomplete="off">
+<button id="go">开始生成我的工作台</button>
+<div class="msg" id="m"></div>
+<pre id="log" style="display:none"></pre>
+</div>
+<script>
+const btn = document.getElementById('go'), inp = document.getElementById('t'), m = document.getElementById('m');
+btn.onclick = async () => {
+  const t = inp.value.trim();
+  if(!t){ m.className='msg err'; m.textContent='请先贴凭证'; return; }
+  btn.disabled = true; m.className='msg'; m.textContent='正在验证凭证…';
+  const r = await fetch('/api/setup', {method:'POST', body: JSON.stringify({token:t})});
+  const d = await r.json();
+  if(!d.ok){ btn.disabled=false; m.className='msg err'; m.textContent = '凭证无效：' + (d.error||''); return; }
+  m.className='msg ok'; m.textContent = '凭证有效（' + (d.档||'') + '），正在拉数据，第一次大约 3–8 分钟…';
+  document.getElementById('log').style.display='block';
+  poll();
+};
+async function poll(){
+  const d = await (await fetch('/api/status')).json();
+  const log = document.getElementById('log');
+  log.textContent = (d.log||[]).join('\\n');
+  log.scrollTop = log.scrollHeight;
+  if(d.running){ setTimeout(poll, 1500); return; }
+  if(d.ok){ m.textContent='完成了，正在打开…'; setTimeout(()=>location.href='/', 800); }
+  else { m.className='msg err'; m.textContent='生成失败，把下面的日志发给管理员'; btn.disabled=false; }
+}
+</script></body></html>"""
+
+
+class H(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, body, ctype="text/html; charset=utf-8", code=200):
+        b = body.encode() if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def do_GET(self):
+        p = urllib.parse.urlsplit(self.path).path
+        if p == "/api/status":
+            return self._send(json.dumps(STATE, ensure_ascii=False), "application/json")
+        if p in ("/", "/index.html"):
+            if OUT.exists() and token():
+                return self._send(OUT.read_bytes())
+            return self._send(SETUP)
+        f = HERE / p.lstrip("/")
+        if f.exists() and f.is_file() and f.resolve().parent == HERE.resolve():
+            return self._send(f.read_bytes(), "application/octet-stream")
+        return self._send("not found", "text/plain", 404)
+
+    def do_POST(self):
+        p = urllib.parse.urlsplit(self.path).path
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n).decode() if n else "{}"
+        if p == "/api/setup":
+            try:
+                t = json.loads(raw).get("token", "").strip()
+            except ValueError:
+                return self._send(json.dumps({"ok": False, "error": "bad json"}), "application/json", 400)
+            ok, info = check_token(t)
+            if not ok:
+                return self._send(json.dumps({"ok": False, "error": info}, ensure_ascii=False), "application/json")
+            save_token(t)
+            run_build()
+            return self._send(json.dumps({"ok": True, "档": info}, ensure_ascii=False), "application/json")
+        if p == "/api/rebuild":
+            run_build()
+            return self._send(json.dumps({"ok": True}), "application/json")
+        return self._send("not found", "text/plain", 404)
+
+
+if __name__ == "__main__":
+    print("=" * 52)
+    print(" 用户整理工作台（个人版）")
+    print(" 打开： http://127.0.0.1:%d" % PORT)
+    print(" 凭证： %s" % ("已保存" if token() else "第一次进来填"))
+    print("=" * 52)
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    with socketserver.ThreadingTCPServer(("127.0.0.1", PORT), H) as srv:
+        srv.serve_forever()
