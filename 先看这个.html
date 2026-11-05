@@ -1,0 +1,71 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>怎么用 · 用户整理工作台</title>
+<style>
+body{margin:0;background:#f5f3ef;color:#1d2321;
+ font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;line-height:1.75}
+.wrap{max-width:720px;margin:0 auto;padding:48px 32px 80px}
+h1{font-size:24px;margin:0 0 8px;font-weight:650;letter-spacing:-.01em}
+.sub{color:#7b8580;font-size:13.5px;margin-bottom:34px}
+.step{background:#fff;border:1px solid #e7e4de;padding:22px 24px;margin-bottom:14px;
+ display:flex;gap:18px;align-items:flex-start}
+.n{flex:0 0 34px;height:34px;border-radius:50%;background:#1f4a3d;color:#fff;
+ display:flex;align-items:center;justify-content:center;font-weight:600;font-size:15px}
+.step h2{margin:0 0 6px;font-size:15.5px;font-weight:650}
+.step p{margin:0;font-size:13.5px;color:#4e5752}
+code{background:#f1efe9;padding:2px 7px;border-radius:3px;font-size:12.5px;
+ font-family:ui-monospace,Menlo,monospace}
+.warn{background:#fdf6ec;border:1px solid #f0e0c4;padding:18px 22px;margin:20px 0;
+ font-size:13.5px;color:#7a5a1e;line-height:1.85}
+.warn b{color:#8a5a00}
+.big{display:inline-block;background:#1f4a3d;color:#fff;padding:10px 20px;
+ border-radius:5px;font-size:14px;text-decoration:none;margin-top:6px}
+.foot{margin-top:34px;font-size:12.5px;color:#9aa39e;line-height:1.9;
+ border-top:1px solid #e7e4de;padding-top:16px}
+</style></head><body><div class="wrap">
+
+<h1>用户整理工作台 · 怎么开始</h1>
+<div class="sub">三步，5 分钟。不用装任何软件。</div>
+
+<div class="step"><div class="n">1</div><div>
+  <h2>解压后，先双击「启动.command」</h2>
+  <p>会弹出一个黑色终端窗口，自动启动服务并打开浏览器。<b>看到浏览器跳出来就成了。</b></p>
+</div></div>
+
+<div class="warn">
+  <b>如果双击没反应、或提示"无法打开，因为来自身份不明的开发者"：</b><br>
+  在这个文件上 <b>右键 → 打开</b>，弹窗里再点一次「打开」。<br>
+  只需做一次，以后双击就行。
+</div>
+
+<div class="step"><div class="n">2</div><div>
+  <h2>浏览器里会看到「初始化」页面</h2>
+  <p>把管理员给你的 CRM 凭证（<code>jsu_</code> 开头的一长串）贴进输入框，
+  点「开始生成我的工作台」。</p>
+</div></div>
+
+<div class="step"><div class="n">3</div><div>
+  <h2>等 3–8 分钟</h2>
+  <p>正在拉你自己名下的客户数据（6,000 多人 + 学习记录 + 跟进记录）。
+  跑完会自动跳进工作台，之后每天双击「启动.command」就能直接用，不用再填凭证。</p>
+</div></div>
+
+<div class="warn">
+  <b>找不到那个黑色窗口？</b>说明第 1 步没成功。<br>
+  手动做法：打开「终端」App，输入 <code>cd </code>（后面加一个空格），
+  把解压出来的文件夹拖进终端窗口，回车；再输入 <code>python3 壳服务.py</code> 回车；
+  然后浏览器打开 <code>http://127.0.0.1:8901</code>。
+</div>
+
+<div class="warn">
+  <b>提示"没有 python3"？</b><br>
+  打开「终端」，输入 <code>xcode-select --install</code> 回车，装完再双击「启动.command」。
+</div>
+
+<div class="foot">
+凭证只存在你自己电脑上（<code>~/.workbuddy_token</code>），不会上传到任何地方。<br>
+每个人用自己的凭证，看到的是自己名下的客户，互相看不到。<br><br>
+仓库：github.com/pengsihan491-pixel/workbench-personal
+</div>
+
+</div></body></html>
