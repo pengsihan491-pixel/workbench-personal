@@ -2,7 +2,8 @@
 # 双击这个文件 → 启动工作台并打开浏览器
 cd "$(dirname "$0")" || exit 1
 PORT=8901
-LOG="$HOME/工作台启动日志.txt"
+LOG="$(pwd)/启动日志.txt"
+[ -w "$(pwd)" ] || LOG="/tmp/工作台启动日志.txt"
 
 pause() {
   echo
