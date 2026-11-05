@@ -7,16 +7,22 @@
 ## 快速开始
 
 1. 下载本仓库（Code → Download ZIP）并解压
-2. 双击 **启动.command**
-3. 浏览器打开 `http://127.0.0.1:8901`
+2. 双击启动文件 —— **macOS 用 `启动.command`，Windows 用 `启动.bat`**
+3. 浏览器自动打开 `http://127.0.0.1:8901`
 4. 贴上你自己的 CRM 凭证（`jsu_` 开头），点「开始生成我的工作台」
 5. 等 3–8 分钟，自动进入工作台
 
+> macOS 第一次双击若提示"来自身份不明的开发者"，在文件上 **右键 → 打开** 一次即可。
+> Windows 若提示缺少 Python，装一次 python.org 的 Windows 版，安装时勾选 **Add python.exe to PATH**。
+
 ## 需要什么
 
-- macOS（Windows 见下方）
-- 系统自带 python3，不用装别的
-- 能访问 `https://jiasujiaoyu.cn`（公司网络可能需要连 VPN）
+| 系统 | 启动文件 | Python |
+|---|---|---|
+| macOS | `启动.command` | 系统自带，无需安装 |
+| Windows | `启动.bat` | 需装一次 [python.org](https://www.python.org/downloads/) 版本 |
+
+都要能访问 `https://jiasujiaoyu.cn`（公司网络可能需要连 VPN）。
 
 ## 凭证
 
@@ -48,13 +54,15 @@
 
 ## Windows 用户
 
-把 `启动.command` 的等价命令手动执行即可：
+双击 **启动.bat** 就行。
+
+如果手动来：
 
 ```
 python 壳服务.py
 ```
 
-然后浏览器打开 `http://127.0.0.1:8901`。
+然后浏览器打开 `http://127.0.0.1:8901`。停止服务：任务管理器结束 python.exe，或命令行 `taskkill /IM python.exe /F`。
 
 ## 常见问题
 
